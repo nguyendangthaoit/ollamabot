@@ -2,7 +2,7 @@ import httpx
 import time
 
 url = "http://127.0.0.1:8000/api/chat"
-session_id = "A_session_001"  # Định danh phiên chat cố định
+session_id = "A_session_001"  # Fixed chat session identifier
 
 
 def send_chat(prompt_text):
@@ -16,9 +16,9 @@ def send_chat(prompt_text):
     print()
 
 
-# Lượt 1: Giới thiệu bản thân
-send_chat("Chào bạn, tôi tên là A và tôi là một marketing person.")
+# Turn 1: Introduce yourself
+send_chat("Hello, my name is A and I am a marketing person.")
 
-# Nghỉ 2 giây rồi hỏi câu kiểm tra bộ nhớ
+# Wait 2 seconds, then ask a memory check question
 time.sleep(2)
-send_chat("Tôi vừa nói tôi tên là gì và làm nghề gì ấy nhỉ?")
+send_chat("What did I just say my name and job were?")

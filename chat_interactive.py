@@ -2,18 +2,18 @@ import httpx
 import uuid
 
 url = "http://127.0.0.1:8000/api/chat"
-# Tạo một Session ngẫu nhiên cho lượt chat này (hoặc bạn tự đặt chuỗi bất kỳ)
+# Create a random session for this chat session (or you can define your own string)
 session_id = f"session_{uuid.uuid4().hex[:6]}"
 
 print("====================================================")
-print(f" HỆ THỐNG CHAT LOCAL ĐÃ SẴN SÀNG (Session: {session_id})")
-print(" Gõ 'exit' hoặc 'quit' để kết thúc cuộc trò chuyện.")
+print(f" LOCAL CHAT SYSTEM READY (Session: {session_id})")
+print(" Type 'exit' or 'quit' to end the conversation.")
 print("====================================================")
 
 while True:
-    user_input = input("\nBạn: ")
+    user_input = input("\nYou: ")
     if user_input.strip().lower() in ["exit", "quit"]:
-        print("Tạm biệt!")
+        print("Goodbye!")
         break
 
     if not user_input.strip():
@@ -23,15 +23,15 @@ while True:
     data = {"prompt": user_input, "session_id": session_id}
 
     try:
-        # Gọi stream lên FastAPI
+        # Call FastAPI with streaming response
         with httpx.stream("POST", url, json=data, timeout=60.0) as response:
             for line in response.iter_lines():
                 if line.startswith("data: "):
-                    # Bóc tách chữ "data: " ra để lấy nội dung thật
-                    content = line[6:]  # Lấy từ ký tự thứ 6 trở đi
-                    # In ra màn hình (giữ nguyên end="" để các từ nối liền nhau)
+                    # Remove "data: " prefix to get actual content
+                    content = line[6:]  # Take everything after character 6
+                    # Print to screen (keep end="" so text flows naturally)
                     print(content, end="", flush=True)
 
-        print()  # Xuống dòng khi AI trả lời xong toàn bộ câu
+        print()  # New line after AI finishes responding
     except Exception as e:
-        print(f"\nLỗi kết nối Backend: {e}")
+        print(f"\nBackend connection error: {e}")
