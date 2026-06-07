@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any, TypedDict
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 from langchain_ollama import ChatOllama
@@ -31,12 +31,13 @@ async def lifespan(app: FastAPI):
 
             # Store the actual checkpointer object (correct type) into app state
             app.state.checkpointer = saver
-
             # 3. Compile the graph once here
             workflow = StateGraph(State)
             workflow.add_node("agent", call_model)
+            workflow.add_node("summarize_node", summarize_conversation)
             workflow.add_edge(START, "agent")
-            workflow.add_edge("agent", END)
+            workflow.add_conditional_edges("agent", should_summarize)
+            workflow.add_edge("summarize_node", END)
 
             # At this point, saver is a valid BaseCheckpointSaver, so no type warnings
             app.state.graph_app = workflow.compile(checkpointer=saver)
@@ -69,19 +70,28 @@ class State(TypedDict):
 # 4. Define LLM processing node
 prompt_template = ChatPromptTemplate.from_messages(
     [
-        (
-            "system",
-            "You are an intelligent AI assistant. Use the conversation history to respond logically.",
-        ),
+        ("system", "{system_context}"),  # Injected dynamically here
         MessagesPlaceholder(variable_name="messages"),
     ]
 )
 
 
 def call_model(state: State):
-    print("[NODE] Executing Agent Node...")
     chain = prompt_template | llm
-    response = chain.invoke({"messages": state["messages"]})
+    existing_summary = state.get("summary", "")
+
+    system_context = (
+        "You are an intelligent AI assistant. Respond naturally in English."
+    )
+    if existing_summary:
+        system_context += (
+            f" Summary of previous conversation context: {existing_summary}"
+        )
+
+    # Passing system_context as a placeholder value directly into the template
+    response = chain.invoke(
+        {"system_context": system_context, "messages": state["messages"]}
+    )
     return {"messages": [response]}
 
 
@@ -106,8 +116,6 @@ def stream_langgraph_response(prompt: str, session_id: str, graph_app: Any):
             # Only process tokens from the 'agent' node (avoid echoing user input)
             if metadata.get("langgraph_node") == "agent":
                 if hasattr(msg, "content") and msg.content:
-                    # Print to terminal for debugging
-                    print(msg.content, end="", flush=True)
                     # Yield SSE-formatted response
                     yield f"data: {msg.content}\n\n"
 
@@ -117,6 +125,44 @@ def stream_langgraph_response(prompt: str, session_id: str, graph_app: Any):
         print(traceback.format_exc())
         print("=" * 50 + "\n")
         yield "data: Error details: Check Backend Terminal\n\n"
+
+
+def summarize_conversation(state: State):
+    """Compresses oldest messages into text and issues deletion commands to Redis."""
+    messages = state["messages"]
+    existing_summary = state.get("summary", "")
+
+    if len(messages) < 6:
+        return {}
+
+    print(f"\n[MEMORY SYSTEM] Detected {len(messages)} messages. Compressing memory...")
+    messages_to_summarize = messages[:-2]
+
+    summary_prompt = (
+        f"Progressively summarize the lines of conversation provided below concisely. "
+        f"If a previous summary exists ({existing_summary}), incorporate the new context into it. "
+        f"Return ONLY the plain summary text.\n\n"
+    )
+    for m in messages_to_summarize:
+        role = "User" if isinstance(m, HumanMessage) else "AI"
+        summary_prompt += f"{role}: {m.content}\n"
+
+    new_summary = llm.invoke(summary_prompt)
+    print(f"[MEMORY SYSTEM] Updated Summary: {new_summary}")
+
+    # Generate directives to drop strings from Redis memory window
+    delete_messages = [
+        RemoveMessage(id=str(m.id)) for m in messages_to_summarize if m.id is not None
+    ]
+
+    return {"summary": str(new_summary), "messages": delete_messages}
+
+
+def should_summarize(state: State):
+    """Decides whether to go the summary node."""
+    if len(state["messages"]) >= 6:
+        return "summarize_node"
+    return END
 
 
 @app.post("/api/chat")
