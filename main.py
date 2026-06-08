@@ -1,7 +1,7 @@
 import traceback
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, TypedDict
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -36,8 +36,7 @@ async def lifespan(app: FastAPI):
             workflow.add_node("agent", call_model)
             workflow.add_node("summarize_node", summarize_conversation)
             workflow.add_edge(START, "agent")
-            workflow.add_conditional_edges("agent", should_summarize)
-            workflow.add_edge("summarize_node", END)
+            workflow.add_edge("agent", END)
 
             # At this point, saver is a valid BaseCheckpointSaver, so no type warnings
             app.state.graph_app = workflow.compile(checkpointer=saver)
@@ -158,19 +157,44 @@ def summarize_conversation(state: State):
     return {"summary": str(new_summary), "messages": delete_messages}
 
 
-def should_summarize(state: State):
-    """Decides whether to go the summary node."""
-    if len(state["messages"]) >= 6:
-        return "summarize_node"
-    return END
+# def should_summarize(state: State):
+#     """Decides whether to go the summary node."""
+#     if len(state["messages"]) >= 6:
+#         return "summarize_node"
+#     return END
+
+
+async def background_memory_check(session_id: str, graph_app: Any):
+    config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+
+    # 1. get current status of session from Redis
+    state_snapshot = graph_app.get_state(config)
+    current_state = state_snapshot.values
+    messages = current_state.get("messages", [])
+
+    # 2. if the len of mess more than threshold, then call background job.
+    if len(messages) >= 6:
+        print(
+            f"\n[BACKGROUND MEMORY] Triggering background summary for session: {session_id}"
+        )
+
+        summary_results = summarize_conversation(current_state)
+
+        if summary_results:
+            # 3. overwrite new state (include new Summary and RemoveMessage) into Redis
+            graph_app.update_state(config, summary_results, as_node="summarize_node")
+            print("[BACKGROUND MEMORY] Background summary saved successfully!")
 
 
 @app.post("/api/chat")
-async def chat_endpoint(request: ChatRequest, fastapi_req: Request):
+async def chat_endpoint(
+    request: ChatRequest, fastapi_req: Request, background_tasks: BackgroundTasks
+):
     print(f"\n[BACKEND LOG] Received request from Session: {request.session_id}")
+    graph_app = fastapi_req.app.state.graph_app  # Get precompiled graph from app state
 
-    # Get precompiled graph from app state
-    graph_app = fastapi_req.app.state.graph_app
+    # add background job
+    background_tasks.add_task(background_memory_check, request.session_id, graph_app)
 
     # Return streaming response (Event-Stream)
     return StreamingResponse(
