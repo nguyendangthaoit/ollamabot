@@ -1,9 +1,11 @@
 fastapi
 uvicorn
+httpx
+redis
+python-dotenv
 langchain-core
 langchain-ollama
 langchain-redis
 langgraph 
 langgraph-checkpoint-redis
-httpx
-redis
+langchain-google-genai
