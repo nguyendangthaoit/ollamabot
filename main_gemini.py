@@ -5,7 +5,12 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any, TypedDict
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
+from langchain_core.messages import (
+    BaseMessage,
+    HumanMessage,
+    RemoveMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
@@ -85,7 +90,12 @@ async def lifespan(app: FastAPI):
             workflow.add_edge("tools", "agent")
             # Notice: There is NO 'workflow.add_edge("agent", END)' here!
             # Attach the async checkpointer safely
-            app.state.graph_app = workflow.compile(checkpointer=saver)
+            app.state.graph_app = workflow.compile(
+                checkpointer=saver,
+                interrupt_before=[
+                    "tools"
+                ],  # Tells the engine to pause right BEFORE entering the "tools" node
+            )
 
             # 4. Keep FastAPI running to serve requests
             yield
@@ -359,6 +369,120 @@ async def time_travel_replay(request: TimeTravelReplayRequest, fastapi_req: Requ
 
 
 # --- TIME TRAVEL EXTENSIONS ---
+
+
+# --- HUMAN IN THE LOOP---
+class ActionReviewRequest(BaseModel):
+    session_id: str
+    feedback: str | None = None  # Optional feedback if rejecting or modifying
+
+
+async def stream_langgraph_response_hitl(
+    input_data: Any, config: RunnableConfig, graph_app: Any
+):
+    try:
+        async for event in graph_app.astream_events(
+            input=input_data, config=config, version="v2"
+        ):
+            if (
+                event["event"] == "on_chat_model_stream"
+                and event["metadata"].get("langgraph_node") == "agent"
+            ):
+                chunk_content = event["data"]["chunk"].content
+                token = ""
+
+                if isinstance(chunk_content, list) and len(chunk_content) > 0:
+                    first_item = chunk_content[0]
+                    if isinstance(first_item, dict) and "text" in first_item:
+                        token = first_item["text"]
+                elif isinstance(chunk_content, str):
+                    token = chunk_content
+
+                if token:
+                    yield f"data: {token}\n\n"
+    except Exception as e:
+        print(f"\n[HITL STREAM ERROR]: {traceback.format_exc()}")
+        yield "data: [Error]\n\n"
+
+
+@app.post("/api/chat/approve")
+async def approve_action(request: ActionReviewRequest, fastapi_req: Request):
+    """
+    Approves the pending tool execution and resumes the graph loop.
+    """
+    graph_app = fastapi_req.app.state.graph_app
+    config: RunnableConfig = {"configurable": {"thread_id": request.session_id}}
+
+    # 1. Verify the graph is actually waiting for an interrupt at the tools node
+    state_snapshot = await graph_app.aget_state(config)
+    if "tools" not in state_snapshot.next:
+        return {
+            "status": "error",
+            "message": "The agent is not currently awaiting approval.",
+        }
+
+    print(
+        f"[HITL] Action approved for session {request.session_id}. Resuming stream..."
+    )
+
+    # 2. Passing None tells the graph: "Change nothing in the state, just continue running."
+    return StreamingResponse(
+        stream_langgraph_response_hitl(None, config, graph_app),
+        media_type="text/event-stream",
+    )
+
+
+@app.post("/api/chat/reject")
+async def reject_action(request: ActionReviewRequest, fastapi_req: Request):
+    """
+    Rejects the tool execution, injects human feedback into the state,
+    and forces the graph to route BACK to the agent instead of running the tool.
+    """
+    graph_app = fastapi_req.app.state.graph_app
+    config: RunnableConfig = {"configurable": {"thread_id": request.session_id}}
+
+    state_snapshot = await graph_app.aget_state(config)
+    if "tools" not in state_snapshot.next:
+        return {
+            "status": "error",
+            "message": "The agent is not currently awaiting approval.",
+        }
+
+    # Fetch the pending tool calls that the model requested
+    last_message = state_snapshot.values["messages"][-1]
+    tool_calls = getattr(last_message, "tool_calls", [])
+
+    if not tool_calls:
+        return {"status": "error", "message": "No pending tool calls found to reject."}
+
+    print(f"[HITL] Action rejected by human. Mocking tool rejection response...")
+
+    # 1. Create fake/mocked ToolMessages explaining that the human rejected this action
+    rejection_feedback = request.feedback or "Action denied by administrator."
+
+    rejection_messages = [
+        ToolMessage(
+            content=f"Rejected by Human Overseer: {rejection_feedback}",
+            tool_call_id=tc["id"],
+        )
+        for tc in tool_calls
+    ]
+
+    # 2. Update the state *as if* the tools node ran, but with our rejection message.
+    # We use as_node="tools" so LangGraph thinks the tools phase is satisfied.
+    await graph_app.aupdate_state(
+        config, {"messages": rejection_messages}, as_node="tools"
+    )
+
+    # 3. Resume the graph. Because we supplied the ToolMessages, the conditional edge
+    # will automatically route traffic back to the 'agent' node to read the rejection.
+    return StreamingResponse(
+        stream_langgraph_response_hitl(None, config, graph_app),
+        media_type="text/event-stream",
+    )
+
+
+# --- HUMAN IN THE LOOP---
 
 
 @app.post("/api/chat")
