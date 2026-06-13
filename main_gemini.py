@@ -244,6 +244,123 @@ async def background_memory_check(session_id: str, graph_app: Any):
         print(f"[BACKGROUND MEMORY ERROR]: {traceback.format_exc()}")
 
 
+# --- TIME TRAVEL EXTENSIONS ---
+
+
+class TimeTravelReplayRequest(BaseModel):
+    session_id: str
+    checkpoint_id: str
+    user_prompt_override: str | None = None  # Optional: Fork history with a new input
+
+
+async def stream_langgraph_time_travel(
+    input_data: Any, historic_config: RunnableConfig, graph_app: Any
+):
+    """
+    Streams responses specifically executing out of an explicit historical configuration checkpoint.
+    """
+    try:
+        print(
+            f"[TIME TRAVEL] Spawning timeline out of Checkpoint: {historic_config['configurable'].get('checkpoint_id')}"  # type: ignore
+        )
+
+        async for event in graph_app.astream_events(
+            input=input_data, config=historic_config, version="v2"
+        ):
+            if (
+                event["event"] == "on_chat_model_stream"
+                and event["metadata"].get("langgraph_node") == "agent"
+            ):
+                chunk_content = event["data"]["chunk"].content
+                token = ""
+
+                if isinstance(chunk_content, list) and len(chunk_content) > 0:
+                    first_item = chunk_content[0]
+                    if isinstance(first_item, dict) and "text" in first_item:
+                        token = first_item["text"]
+                elif isinstance(chunk_content, str):
+                    token = chunk_content
+
+                if token:
+                    yield f"data: {token}\n\n"
+
+    except Exception as e:
+        print(f"\n[TIME TRAVEL STREAM ERROR]: {traceback.format_exc()}")
+        yield "data: [Time Travel Stream Error]\n\n"
+
+
+@app.get("/api/chat/history/{session_id}")
+async def get_session_history(session_id: str, fastapi_req: Request):
+    """
+    1. Fetch the state history stream from the Redis Checkpointer.
+    Returns a list of past checkpoints, their timestamps, and the next node to execute.
+    """
+    graph_app = fastapi_req.app.state.graph_app
+    config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+
+    history_records = []
+
+    # Iterate through all saved checkpoints for this specific thread_id
+    async for state in graph_app.aget_state_history(config):
+        history_records.append(
+            {
+                "checkpoint_id": state.config["configurable"]["checkpoint_id"],
+                "next_executable_node": state.next,  # Tells you where the graph paused
+                "has_summary": bool(state.values.get("summary")),
+                "message_count": len(state.values.get("messages", [])),
+                "last_message": (
+                    state.values["messages"][-1].content
+                    if state.values.get("messages")
+                    else None
+                ),
+            }
+        )
+
+    return {"session_id": session_id, "history": history_records}
+
+
+@app.post("/api/chat/time-travel")
+async def time_travel_replay(request: TimeTravelReplayRequest, fastapi_req: Request):
+    """
+    2. Resume or Fork execution from a specific historical checkpoint ID.
+    """
+    graph_app = fastapi_req.app.state.graph_app
+
+    # Build the historic config targeting the exact checkpoint snapshot
+    historic_config: RunnableConfig = {
+        "configurable": {
+            "thread_id": request.session_id,
+            "checkpoint_id": request.checkpoint_id,
+        }
+    }
+
+    # Fetch the state at that exact microsecond in history
+    historic_state = await graph_app.aget_state(historic_config)
+    if not historic_state.values:
+        return {"error": "Target checkpoint ID not found or expired in Redis memory."}
+
+    # Scenario A: The user wants to fork history by providing a brand new prompt from that point
+    if request.user_prompt_override:
+        input_data = {"messages": [HumanMessage(content=request.user_prompt_override)]}
+
+        # We stream the new alternate timeline starting precisely from the old checkpoint config
+        return StreamingResponse(
+            stream_langgraph_time_travel(input_data, historic_config, graph_app),
+            media_type="text/event-stream",
+        )
+
+    # Scenario B: Just replay/resume execution on the exact existing state values
+    else:
+        # None passes no new inputs, meaning it forces the graph to run whatever node was up next
+        return StreamingResponse(
+            stream_langgraph_time_travel(None, historic_config, graph_app),
+            media_type="text/event-stream",
+        )
+
+
+# --- TIME TRAVEL EXTENSIONS ---
+
+
 @app.post("/api/chat")
 async def chat_endpoint(
     request: ChatRequest, fastapi_req: Request, background_tasks: BackgroundTasks
