@@ -19,11 +19,28 @@ from langgraph.checkpoint.redis.aio import AsyncRedisSaver  # Standard safe impo
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langchain_google_genai import ChatGoogleGenerativeAI
-
 from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel
 
+import phoenix as px
+from openinference.instrumentation.langchain import LangChainInstrumentor
+from opentelemetry import trace as otel_trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
 load_dotenv()
+
+session = px.launch_app()
+#  Setup the OpenTelemetry Tracer Provider targeting Phoenix
+tracer_provider = TracerProvider()
+tracer_provider.add_span_processor(
+    SimpleSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:6006/v1/traces"))
+)
+otel_trace.set_tracer_provider(tracer_provider)
+
+# Dynamic Instrumentation: This automatically hooks into ALL LangChain/LangGraph objects
+LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
 
 
 @tool
