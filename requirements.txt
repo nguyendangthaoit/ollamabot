@@ -9,9 +9,14 @@ langchain-redis
 langgraph 
 langgraph-checkpoint-redis
 langchain-google-genai
+langchain-text-splitters
+langchain-qdrant
+qdrant-client
+pandas
 # Tracing
 openinference-instrumentation-langchain
 opentelemetry-sdk
 opentelemetry-exporter-otlp
 arize-phoenix
 # Tracing
+
