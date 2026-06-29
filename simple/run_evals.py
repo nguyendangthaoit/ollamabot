@@ -8,7 +8,7 @@ from phoenix.evals import create_classifier, evaluate_dataframe
 from phoenix.evals.llm import LLM
 
 # Import your FastAPI app directly
-from main_gemini import app
+from simple.main_gemini import app
 
 
 async def execute_graph_for_eval(

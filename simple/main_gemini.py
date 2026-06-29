@@ -31,16 +31,16 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 
 load_dotenv()
 
-session = px.launch_app()
-#  Setup the OpenTelemetry Tracer Provider targeting Phoenix
-tracer_provider = TracerProvider()
-tracer_provider.add_span_processor(
-    SimpleSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:6006/v1/traces"))
-)
-otel_trace.set_tracer_provider(tracer_provider)
+# session = px.launch_app()
+# #  Setup the OpenTelemetry Tracer Provider targeting Phoenix
+# tracer_provider = TracerProvider()
+# tracer_provider.add_span_processor(
+#     SimpleSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:6006/v1/traces"))
+# )
+# otel_trace.set_tracer_provider(tracer_provider)
 
-# Dynamic Instrumentation: This automatically hooks into ALL LangChain/LangGraph objects
-LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+# # Dynamic Instrumentation: This automatically hooks into ALL LangChain/LangGraph objects
+# LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
 
 
 @tool
@@ -109,9 +109,9 @@ async def lifespan(app: FastAPI):
             # Attach the async checkpointer safely
             app.state.graph_app = workflow.compile(
                 checkpointer=saver,
-                interrupt_before=[
-                    "tools"
-                ],  # Tells the engine to pause right BEFORE entering the "tools" node
+                # interrupt_before=[
+                #     "tools"
+                # ],  # Tells the engine to pause right BEFORE entering the "tools" node
             )
 
             # 4. Keep FastAPI running to serve requests
