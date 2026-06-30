@@ -1,11 +1,13 @@
 import traceback
+from typing import Literal
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, RemoveMessage
+from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
-from states import State
+from states import RouteDecision, State
 from tools import tools_list
+from rag.retrieve import query_knowledge_base
 
 # Initialize Models
 llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", streaming=True).bind_tools(
@@ -22,9 +24,15 @@ prompt_template = ChatPromptTemplate.from_messages(
 
 
 async def call_model(state: State):
+    print("[GRAPH NODE] Entering Agent call_model Node...")
+
+    # 1. Re-initialize your original chain / template variables
     chain = prompt_template | llm
+
+    # 2. Extract long-term memory summary from state
     existing_summary = state.get("summary", "")
 
+    # 3. Build your original baseline system context string
     system_context = (
         "You are an intelligent AI assistant. Respond naturally in English."
     )
@@ -33,6 +41,17 @@ async def call_model(state: State):
             f" Summary of previous conversation context: {existing_summary}"
         )
 
+    # 4. Extract your RAG context and append it directly to the system_context
+    retrieved_context = state.get("retrieved_context", "")
+    if retrieved_context:
+        system_context += (
+            f"\n\nUse ONLY the following verified database records to answer the user query accurately. "
+            f"If the answer cannot be found in these records, state clearly that you do not possess "
+            f"that information.\n"
+            f"--- CORPORATE POLICY RECORDS ---\n{retrieved_context}\n--------------------------------"
+        )
+
+    # 5. Execute your original native chain call pattern asynchronously
     response = await chain.ainvoke(
         {"system_context": system_context, "messages": state["messages"]}
     )
@@ -91,3 +110,46 @@ async def background_memory_check(session_id: str, graph_app):
                 )
     except Exception:
         print(f"[BACKGROUND MEMORY ERROR]: {traceback.format_exc()}")
+
+
+# --- 2. THE CONDITIONAL ROUTING FUNCTION ---
+def route_question(state: State):
+    """
+    Evaluates the user query and routes it to the correct path.
+    """
+    print("[ROUTER] Analyzing query intent...")
+    user_query = state["messages"][-1].content
+
+    # Force the LLM to output structured JSON matching our Pydantic schema
+    structured_llm = llmOllama.with_structured_output(RouteDecision)
+
+    system_prompt = (
+        "You are an incoming request router. Analyze the user's input and determine "
+        "if they are asking about specific rule, policy, company documents, Work Schedules & Hybrid Model, Leave and Time-Off Allocations..."
+    )
+
+    decision = structured_llm.invoke(
+        [SystemMessage(content=system_prompt), HumanMessage(content=str(user_query))]
+    )
+    print(f"[ROUTER] Route determined: {decision.next_node}")  # type: ignore
+    return decision.next_node  # type: ignore
+
+
+async def retrieve_node(state: State):
+    print("\n[GRAPH NODE] Entering Retrieve Node...")
+
+    # 1. Safely pull the user's latest message text from the graph state
+    messages = state.get("messages", [])
+    if not messages:
+        print("[WARN] No messages found in state to search with.")
+        return {"retrieved_context": "No search context available."}
+
+    user_query = messages[-1].content
+
+    # 2. Call your separate retrieval layer function (Requesting top 2 matches for context richness)
+    # Since your query function is synchronous, we run it normally.
+    context_data = query_knowledge_base(user_query=str(user_query), top_k=2)
+
+    # 3. Return the payload to update the graph state.
+    # This automatically syncs the "retrieved_context" key for the next node!
+    return {"retrieved_context": context_data}

@@ -3,6 +3,8 @@ uvicorn
 httpx
 redis
 python-dotenv
+pandas
+pymupdf
 langchain-core
 langchain-ollama
 langchain-redis
@@ -12,11 +14,9 @@ langchain-google-genai
 langchain-text-splitters
 langchain-qdrant
 qdrant-client
-pandas
 # Tracing
 openinference-instrumentation-langchain
 opentelemetry-sdk
 opentelemetry-exporter-otlp
 arize-phoenix
 # Tracing
-
