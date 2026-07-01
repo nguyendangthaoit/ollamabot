@@ -5,6 +5,7 @@ from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
+from langchain_groq import ChatGroq
 from states import RouteDecision, State
 from tools import tools_list
 from rag.retrieve import query_knowledge_base
@@ -16,6 +17,8 @@ llm_primary = ChatGoogleGenerativeAI(
 
 # llm_assistant = ChatOllama(model="llama3.1")
 llm_assistant = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
+
+llm_support = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
 
 prompt_template = ChatPromptTemplate.from_messages(
     [

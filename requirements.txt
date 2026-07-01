@@ -13,6 +13,7 @@ langgraph-checkpoint-redis
 langchain-google-genai
 langchain-text-splitters
 langchain-qdrant
+langchain-groq
 qdrant-client
 # Tracing
 openinference-instrumentation-langchain
