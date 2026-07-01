@@ -10,10 +10,12 @@ from tools import tools_list
 from rag.retrieve import query_knowledge_base
 
 # Initialize Models
-llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", streaming=True).bind_tools(
-    tools_list
-)
-llmOllama = ChatOllama(model="llama3.1")
+llm_primary = ChatGoogleGenerativeAI(
+    model="gemini-3.1-flash-lite", streaming=True
+).bind_tools(tools_list)
+
+# llm_assistant = ChatOllama(model="llama3.1")
+llm_assistant = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 
 prompt_template = ChatPromptTemplate.from_messages(
     [
@@ -27,7 +29,7 @@ async def call_model(state: State):
     print("[GRAPH NODE] Entering Agent call_model Node...")
 
     # 1. Re-initialize your original chain / template variables
-    chain = prompt_template | llm
+    chain = prompt_template | llm_primary
 
     # 2. Extract long-term memory summary from state
     existing_summary = state.get("summary", "")
@@ -78,7 +80,7 @@ async def summarize_conversation_async(state: State):
         role = "User" if isinstance(m, HumanMessage) else "AI"
         summary_prompt += f"{role}: {m.content}\n"
 
-    new_summary = await llmOllama.ainvoke(summary_prompt)
+    new_summary = await llm_assistant.ainvoke(summary_prompt)
     print(f"[MEMORY SYSTEM] Updated Summary: {new_summary.content}")
 
     delete_messages = [
@@ -121,7 +123,7 @@ def route_question(state: State):
     user_query = state["messages"][-1].content
 
     # Force the LLM to output structured JSON matching our Pydantic schema
-    structured_llm = llmOllama.with_structured_output(RouteDecision)
+    structured_llm = llm_assistant.with_structured_output(RouteDecision)
 
     system_prompt = (
         "You are an incoming request router. Analyze the user's input and determine "

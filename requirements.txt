@@ -20,3 +20,4 @@ opentelemetry-sdk
 opentelemetry-exporter-otlp
 arize-phoenix
 # Tracing
+flashrank

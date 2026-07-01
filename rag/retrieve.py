@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
+from flashrank import Ranker, RerankRequest
 
 load_dotenv()
 
@@ -19,28 +20,44 @@ vector_store = QdrantVectorStore(
     client=client, collection_name=COLLECTION_NAME, embedding=embeddings_model
 )
 
+flash_ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2", cache_dir="/tmp")
 
-def query_knowledge_base(user_query: str, top_k: int = 1):
+
+def query_knowledge_base(user_query: str, top_k: int = 2):
     print(f"\n[RETRIEVAL] Processing user query: '{user_query}'")
 
-    # 3. Perform a similarity search with raw relevance scores
-    # score_threshold filters out vectors that don't pass a basic geometric confidence bar
-    results_with_scores = vector_store.similarity_search_with_score(
-        query=user_query, k=top_k
-    )
+    # Step 1: Cast a wider net from Qdrant to capture all potential data nodes
+    raw_results = vector_store.similarity_search(query=user_query, k=10)
+
+    if not raw_results:
+        print("[RETRIEVAL] Zero initial matches found inside Qdrant cluster.")
+        return ""
+
+    # Step 2: Format LangChain objects into raw dict arrays required by FlashRank
+    passages = [
+        {"id": idx, "text": doc.page_content, "meta": doc.metadata}
+        for idx, doc in enumerate(raw_results)
+    ]
+
+    # Step 3: Package execution request payload
+    rerank_request = RerankRequest(query=user_query, passages=passages)
 
     print(
-        f"[RETRIEVAL] Found {len(results_with_scores)} matches matching the criteria.\n"
+        f"[RERANKER] Processing {len(passages)} chunks through local Cross-Encoder matrix..."
     )
+    reranked_results = flash_ranker.rerank(rerank_request)
+
+    # Step 4: Extract and build the final filtered context string
+    print(f"[RERANKER] Filtering out top {top_k} high-precision nodes.")
 
     retrieved_context = ""
-    for doc, score in results_with_scores:
-        print(f"--- MATCH (Cosine Score: {score:.4f}) ---")
-        print(doc.page_content.strip())
-        print(f"Metadata payload: {doc.metadata}\n")
+    # Select only the top_k elements returned by the ranker execution
+    for high_precision_node in reranked_results[:top_k]:
+        score = high_precision_node["score"]
+        text_content = high_precision_node["text"]
 
-        # Accumulate the string contents for prompt injection
-        retrieved_context += f"{doc.page_content}\n\n"
+        print(f" -> Re-Ranked Match Confidence Score: {score:.4f}")
+        retrieved_context += f"{text_content}\n\n"
 
     return retrieved_context
 
